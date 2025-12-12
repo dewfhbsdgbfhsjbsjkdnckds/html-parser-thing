@@ -84,6 +84,8 @@ void feedToken(token *inputToken){
 }
 
 // redo this to work with a stream of bytes/chars, but thats annoying
+// todo handle closing tags
+// todo add more comments, explaining maybe
 void parse(char *input){
 	enum state {
 		insideTag,
