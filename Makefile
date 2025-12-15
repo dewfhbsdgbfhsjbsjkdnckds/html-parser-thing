@@ -1,2 +1,2 @@
 make:
-	gcc -o html main.c
+	gcc -g -o html main.c
