@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "listString.c"
 
@@ -28,7 +29,7 @@ char *text = "<!DOCTYPE html>\n\
 	</body>\n\
 </html>";
 
-typedef struct{
+struct element {
 	// maybe i change element type to be a string?
 	// i dont know if html allows user defined types
 	enum elementType {
@@ -38,19 +39,24 @@ typedef struct{
 		body,
 		h1,
 		p,
-		data
+		comment,
+		data // im not sure if i need a data element type but it seems handy
 	} type;
-	struct element *children;
+	struct elementList {
+		int capacity;
+		int size;
+		// list of pointers
+		struct element **children;
+	} childrenList;
+	struct element *parent;
+	// list of children
 	char *data;
-} element;
+};
+typedef struct element element;
 
 typedef struct {
 	element *html;
 } document;
-
-// todo change to using a `document` struct
-char rootMade = 0;
-element root;
 
 typedef struct {
 	int capacity;
@@ -64,52 +70,117 @@ typedef struct {
 		opentag,
 		endTag,
 		characterToken,
-		doctype
+		doctypeToken,
+		commentToken // not implenented yet
 		// i might need eof token
-		// but right now im just using strings and strings dont really have eof,
-		// they have null terminator
-		// idk ill see how i end up implementing it later
+		// but not right now
 	} type;
 	listString data;
 	attributeList attributes;
 } token;
 
 typedef enum {
-	initial
+	initial,
+	beforeHTML,
+	beforeHead,
+	inHead
 } insertionMode;
 
-void feedToken(token *inputToken, insertionMode *currentMode, document *outputDocument){
-	if (*currentMode == initial){
-		if (inputToken->type == characterToken){
-			if (!strncmp(inputToken->data.string, "\n", 1)){}
-			else if (!strncmp(inputToken->data.string, "\t", 1)){}
-			else if (!strncmp(inputToken->data.string, " ", 1)){}
-			//else printf("character token fed: '%s'\n", inputToken->data.string);
-		}
-		if (inputToken->type == doctype){
-			printf("doctype data is: %s\n", inputToken->data.string);
-		}
+void AddChild(struct elementList *list, element *newElement){
+	if (list->size == list->capacity){
+		list->capacity *= 2;
+		list->children = realloc(list->children, list->capacity * sizeof(element *));
 	}
-	if (inputToken->type == opentag){
-		if (!rootMade && !strcmp(inputToken->data.string, "html")){
-			printf("detected html start tag\n");
-			root.type = html;
-			rootMade = 1;
+	list->children[list->size] = newElement;
+	list->size++;
+}
+
+insertionMode currentMode = initial;
+element *currentElement;
+document outputDocument;
+// i have no idea how to do this lmao
+void feedToken(token *inputToken){
+	if (currentMode == initial){
+		if (inputToken->type == characterToken){
+			// ignore leading \n, \t, space
+			if (inputToken->data.string[0] == '\n'){}
+			else if (inputToken->data.string[0] == '\t'){}
+			else if (inputToken->data.string[0] == ' '){}
+			//else printf("character token fed: '%s'\n", inputToken->data.string);
 			return;
 		}
-	}
-	if (inputToken->type == endTag){
-		if (!strcmp(inputToken->data.string, "head")){
-			printf("detected head end tag\n");
+		if (inputToken->type == doctypeToken){
+			printf("%s\n", inputToken->data.string);
+			// problem here is that data.string is " html" not "html"
+			if (!strncmp(inputToken->data.string, "html", 3)){
+				printf("doctype data is: %s\n", inputToken->data.string);
+				currentMode = beforeHTML;
+				return;
+			}
 		}
-		else printf("detected other end tag\n");
+	}
+	if (currentMode == beforeHTML){
+		if (inputToken->type == commentToken){
+			// todo implement
+		}
+		// open tag <html>
+		// a bit janky but im trying to stay a little closer to what the spec is
+		if (inputToken->type == opentag && !strncmp(inputToken->data.string, "html", 4)){
+			if (outputDocument.html == NULL){
+				element *tempHtml = malloc(sizeof(element));
+				struct elementList list = {16, 0, malloc(16 * sizeof(element *))};
+				tempHtml->childrenList = list;
+				tempHtml->type = html;
+				outputDocument.html = tempHtml;
+				currentElement = tempHtml;
+
+				currentMode = beforeHead;
+				return;
+			}
+			else {
+				printf("error: 2 html open tags\n");
+				return;
+			}
+		}
+		else {
+			element *tempHtml = malloc(sizeof(element));
+			struct elementList list = {16, 0, malloc(16 * sizeof(element *))};
+			tempHtml->childrenList = list;
+			tempHtml->type = html;
+			outputDocument.html = tempHtml;
+			currentElement = tempHtml;
+
+			currentMode = beforeHead;
+			// no return here so it goes so beforeHead
+		}
+	}
+	if (currentMode == beforeHead){
+		if (inputToken->type == characterToken){
+			// ignore leading \n, \t, space
+			if (inputToken->data.string[0] == '\n'){}
+			else if (inputToken->data.string[0] == '\t'){}
+			else if (inputToken->data.string[0] == ' '){}
+			return;
+		}
+		if (inputToken->type == opentag){
+			if (!strncmp(inputToken->data.string, "head", 4)){
+				element *newElement = malloc(sizeof(element));
+				newElement->parent = currentElement;
+				newElement->type = head;
+				struct elementList list = {16, 0, malloc(16 * sizeof(element *))};
+				newElement->childrenList = list;
+				currentElement = newElement;
+				currentMode = inHead;
+				printf("made new head element\n");
+			}
+		}
 	}
 }
 
 // redo this to work with a stream of bytes/chars, but thats annoying
 // todo handle closing tags
 // todo add more comments, explaining maybe
-void parse(char *input, document *inputDocument){
+void parse(char *input){
 	enum state {
 		insideTag,
 		tagname,
@@ -119,11 +190,11 @@ void parse(char *input, document *inputDocument){
 		endTagOpen,
 		markupDeclarationOpen,
 		bogusComment,
+		DOCTYPE,
 		beforeDOCTYPEname,
 		DOCTYPEname
 	} currentState;
 	currentState = dataState;
-	insertionMode tokenParsingMode = initial;
 	token currentToken;
 	currentToken.data = createListString(32);
 	listString buffer = createListString(128);
@@ -136,7 +207,7 @@ void parse(char *input, document *inputDocument){
 			else {
 				currentToken.type = characterToken;
 				addCharToListString(&currentToken.data, input[i]);
-				feedToken(&currentToken, &tokenParsingMode, inputDocument);
+				feedToken(&currentToken);
 				clearListString(&currentToken.data);
 				continue;
 			}
@@ -169,7 +240,7 @@ void parse(char *input, document *inputDocument){
 			}
 			else if (input[i] == '>'){
 				currentState = dataState;
-				feedToken(&currentToken, &tokenParsingMode, inputDocument);
+				feedToken(&currentToken);
 				clearListString(&currentToken.data);
 				continue;
 			}
@@ -187,7 +258,7 @@ void parse(char *input, document *inputDocument){
 			addCharToListString(&buffer, input[i]);
 			// checks if the any characters dont match, or if the string is too long
 			if (!strcmp(buffer.string, "DOCTYPE")){
-				currentState = beforeDOCTYPEname;
+				currentState = DOCTYPE;
 				continue;
 			}
 			else if (buffer.size > 7 || strncmp(buffer.string, "DOCTYPE", buffer.size)){
@@ -201,16 +272,22 @@ void parse(char *input, document *inputDocument){
 				continue;
 			}
 		}
+		if (currentState == DOCTYPE){
+			if (input[i] == ' '){
+				currentState = beforeDOCTYPEname;
+				continue;
+			}
+		}
 		if (currentState == beforeDOCTYPEname){
-			currentToken.type = doctype;
+			currentToken.type = doctypeToken;
 			currentState = DOCTYPEname;
 			addCharToListString(&currentToken.data, input[i]);
-				continue;
+			continue;
 		}
 		if (currentState == DOCTYPEname){
 			if (input[i] == '>'){
 				currentState = dataState;
-				feedToken(&currentToken, &tokenParsingMode, inputDocument);
+				feedToken(&currentToken);
 				continue;
 			}
 			else {
@@ -224,7 +301,7 @@ void parse(char *input, document *inputDocument){
 
 int main(int argc, char *argv[]){
 	document documentObject = {NULL};
-	parse(text, &documentObject);
+	parse(text);
 	printf("%s\n", text);
 	return 0;
 }
